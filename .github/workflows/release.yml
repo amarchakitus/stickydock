@@ -2,8 +2,12 @@
 #   git tag v1.0.2 && git push origin v1.0.2
 # The tag must match CFBundleShortVersionString in Info.plist.
 #
-# Running it manually (Actions → Release → Run workflow) does a signed test build
-# and uploads it as a workflow artifact without publishing a release.
+# Running it manually (Actions → Release → Run workflow):
+#   - with a tag (e.g. v1.0.1): builds that tag's source with this version of the
+#     workflow and publishes its release. Use this to retry a release after fixing CI,
+#     without bumping the app version.
+#   - without a tag: signed test build of the chosen branch, uploaded as a workflow
+#     artifact; nothing is published.
 #
 # Requires secrets SIGNING_CERT_P12 / SIGNING_CERT_PASSWORD (see scripts/make_cert.sh)
 # so every release is signed with the same certificate and users keep the
@@ -17,6 +21,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing version tag to build and publish (e.g. v1.0.1). Leave empty for a test build."
+        required: false
+        default: ""
 
 permissions: {}
 
@@ -28,16 +37,29 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Validate tag
+        if: inputs.tag != ''
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$TAG' isn't a version tag like v1.2.3"
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
           persist-credentials: false
 
       - name: Check tag matches app version
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' || inputs.tag != ''
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Info.plist)
-          if [[ "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
-            echo "::error::Tag $GITHUB_REF_NAME doesn't match Info.plist version $VERSION"
+          if [[ "$TAG" != "v$VERSION" ]]; then
+            echo "::error::Tag $TAG doesn't match Info.plist version $VERSION"
             exit 1
           fi
 
@@ -83,7 +105,7 @@ jobs:
 
   publish:
     needs: build
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' || inputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -96,9 +118,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          gh release create "$GITHUB_REF_NAME" \
+          VERSION="${TAG#v}"
+          # --verify-tag: never create a new tag here; the release must match an existing one.
+          gh release create "$TAG" \
             "StickyDock-$VERSION.dmg" "StickyDock-$VERSION.zip" SHA256SUMS \
+            --verify-tag \
             --title "StickyDock $VERSION" \
             --generate-notes
