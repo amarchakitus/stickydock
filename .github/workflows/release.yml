@@ -1,0 +1,61 @@
+# Builds StickyDock and publishes a GitHub Release when a version tag is pushed:
+#   git tag v1.0.0 && git push origin v1.0.0
+# The tag must match CFBundleShortVersionString in Info.plist.
+#
+# Optional secrets SIGNING_CERT_P12 / SIGNING_CERT_PASSWORD (see scripts/make_cert.sh)
+# sign every release with the same certificate, so users keep the Accessibility
+# permission across updates. Without them, releases are ad-hoc signed.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    env:
+      HAS_SIGNING_CERT: ${{ secrets.SIGNING_CERT_P12 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches app version
+        run: |
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Info.plist)
+          if [[ "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match Info.plist version $VERSION"
+            exit 1
+          fi
+
+      - name: Import signing certificate
+        if: env.HAS_SIGNING_CERT == 'true'
+        env:
+          SIGNING_CERT_P12: ${{ secrets.SIGNING_CERT_P12 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        run: |
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          KC_PASS=$(openssl rand -hex 16)
+          echo "$SIGNING_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KC_PASS" "$KC"
+          security set-keychain-settings "$KC"
+          security unlock-keychain -p "$KC_PASS" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$SIGNING_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KC" > /dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Build
+        run: ./build.sh release
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            "build/StickyDock-$VERSION.dmg" "build/StickyDock-$VERSION.zip" \
+            --title "StickyDock $VERSION" \
+            --generate-notes

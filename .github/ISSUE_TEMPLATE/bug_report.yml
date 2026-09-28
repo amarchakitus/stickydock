@@ -1,0 +1,24 @@
+name: Bug report
+description: The Dock moved when it shouldn't have, or something else isn't working.
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: debug-info
+    attributes:
+      label: Debug info
+      description: Open StickyDock, click **Copy Debug Info** at the bottom of the window, and paste it here.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Screenshots of your display arrangement (System Settings → Displays) help a lot.
