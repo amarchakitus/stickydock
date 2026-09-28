@@ -1,6 +1,9 @@
 # Builds StickyDock and publishes a GitHub Release when a version tag is pushed:
-#   git tag v1.0.1 && git push origin v1.0.1
+#   git tag v1.0.2 && git push origin v1.0.2
 # The tag must match CFBundleShortVersionString in Info.plist.
+#
+# Running it manually (Actions → Release → Run workflow) does a signed test build
+# and uploads it as a workflow artifact without publishing a release.
 #
 # Requires secrets SIGNING_CERT_P12 / SIGNING_CERT_PASSWORD (see scripts/make_cert.sh)
 # so every release is signed with the same certificate and users keep the
@@ -13,6 +16,7 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions: {}
 
@@ -29,6 +33,7 @@ jobs:
           persist-credentials: false
 
       - name: Check tag matches app version
+        if: github.ref_type == 'tag'
         run: |
           VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Info.plist)
           if [[ "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
@@ -54,6 +59,8 @@ jobs:
           security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$SIGNING_CERT_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KC" > /dev/null
           rm "$RUNNER_TEMP/cert.p12"
+          # codesign on the runner only finds identities in keychains on the search list.
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
           echo "SIGN_KEYCHAIN=$KC" >> "$GITHUB_ENV"
 
       - name: Build
@@ -76,6 +83,7 @@ jobs:
 
   publish:
     needs: build
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write
