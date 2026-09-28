@@ -36,11 +36,8 @@ blocks it the first time you open it. To allow it:
 2. Open **System Settings → Privacy & Security** and scroll down to **Security**.
 3. Next to *"StickyDock" was blocked…*, click **Open Anyway** and confirm with your password.
 
-You only need to do this once. If you're comfortable with Terminal, this does the same thing:
-
-```sh
-xattr -dr com.apple.quarantine /Applications/StickyDock.app
-```
+You only need to do this once. To make sure your download is genuine, see
+[Verifying a download](SECURITY.md#verifying-a-download).
 
 ### Allow Accessibility access
 
@@ -111,6 +108,11 @@ defaults delete io.github.amarchakitus.stickydock
 If you turned on **Launch at login**, turn it off before deleting the app, or remove
 StickyDock from **System Settings → General → Login Items** afterwards.
 
+## Security
+
+See [SECURITY.md](SECURITY.md) for how to report a vulnerability and how to verify a
+download.
+
 ## Building from source
 
 You need the Xcode Command Line Tools (`xcode-select --install`).
@@ -123,12 +125,14 @@ cd stickydock
 ```
 
 `./build.sh` on its own builds `build/StickyDock.app`, and `./build.sh release` also
-creates the `.zip` and `.dmg`.
+creates the `.zip`, `.dmg` and `SHA256SUMS`.
 
-`scripts/make_cert.sh` creates a self-signed "StickyDock Local Signing" certificate in
-your login keychain. When every build is signed with the same certificate, macOS keeps
-the Accessibility permission across rebuilds. Without it, builds are ad-hoc signed and
-you have to grant the permission again after each rebuild.
+`scripts/make_cert.sh` adds a self-signed "StickyDock Local Signing" certificate to your
+login keychain. When every build is signed with the same certificate,
+macOS keeps the Accessibility permission across rebuilds. Without it, builds are ad-hoc
+signed and you have to grant the permission again after each rebuild. Builds use the
+hardened runtime, so other code can't be injected into the app to borrow its
+permission.
 
 ### Releasing
 
@@ -139,17 +143,19 @@ git tag v1.0.1 && git push origin v1.0.1
 ```
 
 The [release workflow](.github/workflows/release.yml) builds the app and publishes a
-GitHub Release with the DMG and zip. To sign releases with your certificate, so users
-keep their Accessibility permission when they update, add it as repository secrets
-once (`make_cert.sh` prints these commands):
+GitHub Release with the DMG, zip and `SHA256SUMS`. It needs your certificate as
+repository secrets, so every release has the same signature and users keep their
+Accessibility permission when they update. It refuses to publish an unsigned build.
+Add the secrets once (`make_cert.sh` prints these commands):
 
 ```sh
 base64 -i ~/.stickydock-signing/signing.p12 | gh secret set SIGNING_CERT_P12
 gh secret set SIGNING_CERT_PASSWORD < ~/.stickydock-signing/password.txt
 ```
 
-Keep `~/.stickydock-signing` private and backed up. If you lose it, the next release
-has a different signature and users have to grant the permission again once.
+Keep `~/.stickydock-signing` private and backed up (a password manager works well). If
+you lose the certificate, the next release has a different signature and users have to
+grant the permission again once.
 
 ## License
 

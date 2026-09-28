@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let state = AppState.shared
     private var window: NSWindow?
     private var statusItem: NSStatusItem?
+    private var lastShowRequest = Date.distantPast
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // If another copy is already running, ask it to show its window and exit.
@@ -19,7 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(showSettings), name: Self.showNotification, object: nil)
+            self, selector: #selector(handleShowRequest), name: Self.showNotification, object: nil)
 
         let launchedAtLogin = Self.launchedAsLoginItem()
         buildMainMenu()
@@ -38,6 +39,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    /// Any process can post the distributed "show" notification, so rate-limit it
+    /// to stop it being used to repeatedly steal focus.
+    @objc private func handleShowRequest() {
+        guard Date().timeIntervalSince(lastShowRequest) > 2 else { return }
+        lastShowRequest = Date()
+        showSettings()
     }
 
     @objc func showSettings() {

@@ -13,7 +13,7 @@ body:
     id: debug-info
     attributes:
       label: Debug info
-      description: Open StickyDock, click **Copy Debug Info** at the bottom of the window, and paste it here.
+      description: Open StickyDock, click **Copy Debug Info** at the bottom of the window, and paste it here. Feel free to replace display names (for example "Alex's iPad") with something generic.
       render: text
     validations:
       required: true

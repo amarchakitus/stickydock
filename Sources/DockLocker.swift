@@ -40,9 +40,10 @@ final class DockLocker {
     private(set) var target: DisplayInfo?
 
     var hasAccessibility: Bool { AXIsProcessTrusted() }
-    var isTapActive: Bool { tap != nil }
+    var isTapActive: Bool { tap.map { CGEvent.tapIsEnabled(tap: $0) } ?? false }
 
     private var tap: CFMachPort?
+    private var tapSource: CFRunLoopSource?
     private var isNudging = false
     private var lastNudge = Date.distantPast
     private var failedNudges = 0
@@ -100,6 +101,14 @@ final class DockLocker {
     }
 
     private func tick() {
+        if let tap {
+            if !AXIsProcessTrusted() {
+                // Permission revoked while running: drop the tap rather than leave a dead filter on HID input.
+                removeTap()
+            } else if !CGEvent.tapIsEnabled(tap: tap) {
+                CGEvent.tapEnable(tap: tap, enable: true)
+            }
+        }
         installTapIfPossible()
         let newEdge = Self.readDockEdge()
         if newEdge != edge { refresh() }
@@ -135,7 +144,9 @@ final class DockLocker {
 
     private func installTapIfPossible() {
         guard tap == nil, AXIsProcessTrusted() else { return }
-        let types: [CGEventType] = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+        let types: [CGEventType] = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
+                                    .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
+                                    .otherMouseDown, .otherMouseUp]
         let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << CGEventMask($1.rawValue)) }
         let callback: CGEventTapCallBack = { _, type, event, _ in
             DockLocker.shared.handle(type: type, event: event)
@@ -147,6 +158,17 @@ final class DockLocker {
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: newTap, enable: true)
         tap = newTap
+        tapSource = source
+        onChange?()
+    }
+
+    private func removeTap() {
+        guard let tap else { return }
+        CGEvent.tapEnable(tap: tap, enable: false)
+        if let tapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), tapSource, .commonModes) }
+        CFMachPortInvalidate(tap)
+        self.tap = nil
+        tapSource = nil
         onChange?()
     }
 
@@ -154,6 +176,14 @@ final class DockLocker {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return Unmanaged.passUnretained(event)
+        }
+        switch type {
+        case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp:
+            // While we're pulling the Dock over, the cursor sits where the Dock appears;
+            // swallow clicks so they can't launch whatever app slides in under it.
+            return isNudging ? nil : Unmanaged.passUnretained(event)
+        default:
+            break
         }
         guard enabled, !isNudging, target != nil else { return Unmanaged.passUnretained(event) }
 
@@ -211,6 +241,7 @@ final class DockLocker {
         guard enabled, let target, displays.count > 1, !isNudging,
               failedNudges < maxAutoNudges,
               Date().timeIntervalSince(lastNudge) > 5,
+              CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .mouseMoved) > 1,
               let current = currentDockDisplayID(), current != target.displayID else { return }
         moveDock(to: target)
     }
