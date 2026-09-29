@@ -47,7 +47,7 @@ struct SettingsView: View {
                     }
                     Toggle("Lock the Dock to this display", isOn: $state.enabled)
                     Toggle("Keep hot corners working on other displays", isOn: $state.allowHotCorners)
-                        .help("Leaves the corners of blocked edges reachable. Pushing hard into a corner may occasionally move the Dock.")
+                        .help("Lets the cursor briefly reach corners that have a hot corner set in System Settings, so they still trigger.")
 
                     if !state.targetConnected && !state.targetUUID.isEmpty {
                         Text("That display is disconnected. The Dock is kept on the main display until it's reconnected, then it moves back automatically.")

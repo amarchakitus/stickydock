@@ -31,8 +31,10 @@ final class DockLocker {
     var targetUUID: String? {
         didSet { failedNudges = 0; refresh(); scheduleEnforce(after: 0.3) }
     }
-    /// Leave the corners of blocked edges reachable so hot corners keep working.
+    /// Let the cursor briefly reach corners of blocked edges that have a hot corner set, so they keep working.
     var allowHotCorners = false
+    /// Hot corners set in System Settings, by corner ("tl", "tr", "bl", "br").
+    private(set) var activeHotCorners: Set<String> = []
 
     private(set) var displays: [DisplayInfo] = []
     private(set) var edge: DockEdge = .bottom
@@ -64,6 +66,13 @@ final class DockLocker {
     }()
     private let edgeMargin: CGFloat = 2
     private let cornerZone: CGFloat = 6
+    /// A hot corner fires as soon as the cursor arrives, but the Dock only moves after ~0.2 s of
+    /// pushing, so the cursor may stay on the Dock edge in a hot corner for this long.
+    private let maxCornerDwell: TimeInterval = 0.1
+    /// When the cursor arrived on the Dock edge in a hot corner, while it stays there.
+    private var cornerArrival: Date?
+    /// Marks our own cursor corrections, which come back through the tap.
+    private static let correctionMarker: Int64 = 0x5354_4B44
     private let maxAutoNudges = 3
 
     var dockAutohides: Bool {
@@ -96,6 +105,7 @@ final class DockLocker {
 
     func refresh() {
         edge = Self.readDockEdge()
+        activeHotCorners = Self.readHotCorners()
         let mainID = CGMainDisplayID()
         displays = NSScreen.screens.compactMap { screen in
             guard let num = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
@@ -124,6 +134,7 @@ final class DockLocker {
         installTapIfPossible()
         let newEdge = Self.readDockEdge()
         if newEdge != edge { refresh() }
+        activeHotCorners = Self.readHotCorners()
         enforce()
         // Only notify the UI when something it shows changed; syncing is comparatively expensive.
         let dockID = currentDockDisplayID()
@@ -138,6 +149,14 @@ final class DockLocker {
         CFPreferencesAppSynchronize(domain)
         let value = CFPreferencesCopyAppValue("orientation" as CFString, domain) as? String
         return DockEdge(rawValue: value ?? "bottom") ?? .bottom
+    }
+
+    private static func readHotCorners() -> Set<String> {
+        let domain = "com.apple.dock" as CFString
+        // 0 and 1 both mean no action.
+        return Set(["tl", "tr", "bl", "br"].filter {
+            (CFPreferencesCopyAppValue("wvous-\($0)-corner" as CFString, domain) as? Int ?? 0) > 1
+        })
     }
 
     /// The display the Dock is on. Prefers the Dock's own window: the space screens reserve for the
@@ -240,47 +259,92 @@ final class DockLocker {
         default:
             break
         }
-        guard enabled, !isNudging, target != nil else { return Unmanaged.passUnretained(event) }
-
-        let loc = event.location
-        guard let b = guardedBounds.first(where: { $0.contains(loc) }) else {
+        guard enabled, !isNudging, target != nil,
+              event.getIntegerValueField(.eventSourceUserData) != Self.correctionMarker else {
             return Unmanaged.passUnretained(event)
         }
 
-        if allowHotCorners {
-            let nearCorner: Bool
-            switch edge {
-            case .bottom: nearCorner = loc.x < b.minX + cornerZone || loc.x > b.maxX - cornerZone
-            case .left, .right: nearCorner = loc.y < b.minY + cornerZone || loc.y > b.maxY - cornerZone
-            }
-            if nearCorner { return Unmanaged.passUnretained(event) }
+        let loc = event.location
+        guard let b = guardedBounds.first(where: { $0.contains(loc) }),
+              let p = blockedPosition(for: loc, in: b) else {
+            cornerArrival = nil
+            return Unmanaged.passUnretained(event)
         }
 
-        // Only block edges that are an outer boundary (no other display on the other side).
+        if isInHotCorner(loc, of: b) {
+            let now = Date()
+            if cornerArrival == nil {
+                cornerArrival = now
+                scheduleCornerCheck(arrival: now)
+            }
+            if let arrival = cornerArrival, now.timeIntervalSince(arrival) < maxCornerDwell {
+                return Unmanaged.passUnretained(event)
+            }
+        } else {
+            cornerArrival = nil
+        }
+
+        event.location = p
+        event.setIntegerValueField(edge == .bottom ? .mouseEventDeltaY : .mouseEventDeltaX, value: 0)
+        let button = CGMouseButton(rawValue: UInt32(event.getIntegerValueField(.mouseEventButtonNumber))) ?? .left
+        postCorrection(to: p, type: type, button: button)
+        return Unmanaged.passUnretained(event)
+    }
+
+    /// Where the cursor should be held if `loc` is past the limit on an outer Dock edge of `b`
+    /// (no other display on the other side), or nil if it isn't.
+    private func blockedPosition(for loc: CGPoint, in b: CGRect) -> CGPoint? {
         var p = loc
         switch edge {
         case .bottom:
             let limit = b.maxY - 1 - edgeMargin
-            if loc.y > limit, !isCovered(CGPoint(x: loc.x, y: b.maxY + 0.5)) { p.y = limit }
+            guard loc.y > limit, !isCovered(CGPoint(x: loc.x, y: b.maxY + 0.5)) else { return nil }
+            p.y = limit
         case .left:
             let limit = b.minX + edgeMargin
-            if loc.x < limit, !isCovered(CGPoint(x: b.minX - 0.5, y: loc.y)) { p.x = limit }
+            guard loc.x < limit, !isCovered(CGPoint(x: b.minX - 0.5, y: loc.y)) else { return nil }
+            p.x = limit
         case .right:
             let limit = b.maxX - 1 - edgeMargin
-            if loc.x > limit, !isCovered(CGPoint(x: b.maxX + 0.5, y: loc.y)) { p.x = limit }
+            guard loc.x > limit, !isCovered(CGPoint(x: b.maxX + 0.5, y: loc.y)) else { return nil }
+            p.x = limit
         }
+        return p
+    }
 
-        if p != loc {
-            event.location = p
-            event.setIntegerValueField(edge == .bottom ? .mouseEventDeltaY : .mouseEventDeltaX, value: 0)
-            // Move the cursor itself back too. Not with a warp: events arriving during its input
-            // freeze still report the old position past the limit, so each one re-warped and the
-            // cursor stuck at the edge for as long as the mouse kept moving.
-            let button = CGMouseButton(rawValue: UInt32(event.getIntegerValueField(.mouseEventButtonNumber))) ?? .left
-            CGEvent(mouseEventSource: correctionSource, mouseType: type, mouseCursorPosition: p, mouseButton: button)?
-                .post(tap: .cghidEventTap)
+    /// Whether `loc` is in the corner zone of a hot corner the user has set, at either end of `b`'s Dock edge.
+    private func isInHotCorner(_ loc: CGPoint, of b: CGRect) -> Bool {
+        guard allowHotCorners else { return false }
+        let corner: String?
+        switch edge {
+        case .bottom: corner = loc.x < b.minX + cornerZone ? "bl" : loc.x > b.maxX - cornerZone ? "br" : nil
+        case .left: corner = loc.y < b.minY + cornerZone ? "tl" : loc.y > b.maxY - cornerZone ? "bl" : nil
+        case .right: corner = loc.y < b.minY + cornerZone ? "tr" : loc.y > b.maxY - cornerZone ? "br" : nil
         }
-        return Unmanaged.passUnretained(event)
+        return corner.map(activeHotCorners.contains) ?? false
+    }
+
+    /// Moves the cursor out of a hot corner once its time is up, even if the mouse has stopped moving.
+    private func scheduleCornerCheck(arrival: Date) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + maxCornerDwell + 0.02) { [weak self] in
+            guard let self, self.cornerArrival == arrival, self.enabled, !self.isNudging,
+                  let loc = CGEvent(source: nil)?.location,
+                  let b = self.guardedBounds.first(where: { $0.contains(loc) }),
+                  let p = self.blockedPosition(for: loc, in: b) else { return }
+            let pressed = NSEvent.pressedMouseButtons
+            let type: CGEventType = pressed & 1 != 0 ? .leftMouseDragged
+                : pressed & 2 != 0 ? .rightMouseDragged : pressed != 0 ? .otherMouseDragged : .mouseMoved
+            self.postCorrection(to: p, type: type, button: pressed & 2 != 0 ? .right : pressed & ~3 != 0 ? .center : .left)
+        }
+    }
+
+    /// Moves the cursor itself back to `p`. Not with a warp: events arriving during its input freeze
+    /// still report the old position past the limit, so each one re-warped and the cursor stuck at
+    /// the edge for as long as the mouse kept moving.
+    private func postCorrection(to p: CGPoint, type: CGEventType, button: CGMouseButton) {
+        guard let e = CGEvent(mouseEventSource: correctionSource, mouseType: type, mouseCursorPosition: p, mouseButton: button) else { return }
+        e.setIntegerValueField(.eventSourceUserData, value: Self.correctionMarker)
+        e.post(tap: .cghidEventTap)
     }
 
     private func isCovered(_ point: CGPoint) -> Bool {

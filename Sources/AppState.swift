@@ -103,7 +103,7 @@ final class AppState: ObservableObject {
             "StickyDock \(Self.version) (\(arch))",
             "macOS \(os)",
             "Accessibility trusted: \(locker.hasAccessibility), event tap installed: \(locker.hasTap), active: \(locker.isTapActive)",
-            "Lock enabled: \(enabled), hot corners allowed: \(allowHotCorners)",
+            "Lock enabled: \(enabled), hot corners allowed: \(allowHotCorners), hot corners set: \(locker.activeHotCorners.sorted().joined(separator: ", "))",
             "Dock position: \(locker.edge.rawValue), autohide: \(locker.dockAutohides)",
             "Dock window on: \(name(of: locker.dockWindowDisplayID())), reserved space on: \(name(of: locker.reservedSpaceDisplayID()))",
             "Target: \(targetName), connected: \(targetConnected), locking to: \(locker.target?.name ?? "none")",
