@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     static let showNotification = Notification.Name("io.github.amarchakitus.stickydock.show")
 
     private let state = AppState.shared
@@ -58,12 +58,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             w.title = "StickyDock"
             w.styleMask = [.titled, .closable, .miniaturizable]
             w.isReleasedWhenClosed = false
+            w.delegate = self
             w.center()
             window = w
         }
         state.sync()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    // The background poll no longer syncs the UI, so pick up changes made elsewhere
+    // (e.g. Login Items or Accessibility in System Settings) when the user comes back.
+    func windowDidBecomeKey(_ notification: Notification) {
+        state.sync()
     }
 
     @objc private func showAbout() {

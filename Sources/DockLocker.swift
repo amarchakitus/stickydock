@@ -40,6 +40,7 @@ final class DockLocker {
     private(set) var target: DisplayInfo?
 
     var hasAccessibility: Bool { AXIsProcessTrusted() }
+    var hasTap: Bool { tap != nil }
     var isTapActive: Bool { tap.map { CGEvent.tapIsEnabled(tap: $0) } ?? false }
 
     private var tap: CFMachPort?
@@ -47,6 +48,7 @@ final class DockLocker {
     private var isNudging = false
     private var lastNudge = Date.distantPast
     private var failedNudges = 0
+    private var lastDockID: CGDirectDisplayID?
     private var pollTimer: Timer?
     private var enforceWork: DispatchWorkItem?
     private var guardedBounds: [CGRect] = []
@@ -78,6 +80,7 @@ final class DockLocker {
         pollTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             self?.tick()
         }
+        pollTimer?.tolerance = 1 // let macOS coalesce this wakeup with others
         scheduleEnforce(after: 1)
     }
 
@@ -97,23 +100,29 @@ final class DockLocker {
         target = displays.first { $0.id == targetUUID } ?? displays.first { $0.isMain } ?? displays.first
         allBounds = displays.map(\.bounds)
         guardedBounds = displays.filter { $0.displayID != target?.displayID }.map(\.bounds)
+        updateTapState()
         onChange?()
     }
 
     private func tick() {
-        if let tap {
+        if tap != nil {
             if !AXIsProcessTrusted() {
                 // Permission revoked while running: drop the tap rather than leave a dead filter on HID input.
                 removeTap()
-            } else if !CGEvent.tapIsEnabled(tap: tap) {
-                CGEvent.tapEnable(tap: tap, enable: true)
+            } else {
+                updateTapState()
             }
         }
         installTapIfPossible()
         let newEdge = Self.readDockEdge()
         if newEdge != edge { refresh() }
         enforce()
-        onChange?()
+        // Only notify the UI when something it shows changed; syncing is comparatively expensive.
+        let dockID = currentDockDisplayID()
+        if dockID != lastDockID {
+            lastDockID = dockID
+            onChange?()
+        }
     }
 
     private static func readDockEdge() -> DockEdge {
@@ -156,9 +165,9 @@ final class DockLocker {
                                              callback: callback, userInfo: nil) else { return }
         let source = CFMachPortCreateRunLoopSource(nil, newTap, 0)
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: newTap, enable: true)
         tap = newTap
         tapSource = source
+        updateTapState()
         onChange?()
     }
 
@@ -172,9 +181,18 @@ final class DockLocker {
         onChange?()
     }
 
+    /// The tap only has work to do when there's an edge to guard or a nudge in progress
+    /// (to swallow clicks). Otherwise keep it disabled so mouse events don't wake us.
+    private var tapNeeded: Bool { isNudging || (enabled && !guardedBounds.isEmpty) }
+
+    private func updateTapState() {
+        guard let tap, CGEvent.tapIsEnabled(tap: tap) != tapNeeded else { return }
+        CGEvent.tapEnable(tap: tap, enable: tapNeeded)
+    }
+
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            updateTapState()
             return Unmanaged.passUnretained(event)
         }
         switch type {
@@ -261,6 +279,7 @@ final class DockLocker {
             return
         }
         isNudging = true
+        updateTapState()
         lastNudge = Date()
 
         let original = CGEvent(source: nil)?.location ?? CGPoint(x: display.bounds.midX, y: display.bounds.midY)
@@ -290,6 +309,7 @@ final class DockLocker {
             CGWarpMouseCursorPosition(original)
             CGAssociateMouseAndMouseCursorPosition(1)
             self.isNudging = false
+            self.updateTapState()
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                 if self.currentDockDisplayID() == display.displayID {
                     self.failedNudges = 0

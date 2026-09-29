@@ -61,7 +61,7 @@ final class AppState: ObservableObject {
 
     func sync() {
         displays = locker.displays
-        hasAccessibility = locker.hasAccessibility && locker.isTapActive
+        hasAccessibility = locker.hasAccessibility && locker.hasTap
         let dockID = locker.currentDockDisplayID()
         currentDockName = displays.first { $0.displayID == dockID }?.name ?? "Unknown (Dock may be hidden)"
         launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -102,7 +102,7 @@ final class AppState: ObservableObject {
         var lines = [
             "StickyDock \(Self.version) (\(arch))",
             "macOS \(os)",
-            "Accessibility trusted: \(locker.hasAccessibility), event tap active: \(locker.isTapActive)",
+            "Accessibility trusted: \(locker.hasAccessibility), event tap installed: \(locker.hasTap), active: \(locker.isTapActive)",
             "Lock enabled: \(enabled), hot corners allowed: \(allowHotCorners)",
             "Dock position: \(locker.edge.rawValue), autohide: \(locker.dockAutohides)",
             "Target: \(targetName), connected: \(targetConnected), locking to: \(locker.target?.name ?? "none")",
