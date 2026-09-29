@@ -105,6 +105,7 @@ final class AppState: ObservableObject {
             "Accessibility trusted: \(locker.hasAccessibility), event tap installed: \(locker.hasTap), active: \(locker.isTapActive)",
             "Lock enabled: \(enabled), hot corners allowed: \(allowHotCorners)",
             "Dock position: \(locker.edge.rawValue), autohide: \(locker.dockAutohides)",
+            "Dock window on: \(name(of: locker.dockWindowDisplayID())), reserved space on: \(name(of: locker.reservedSpaceDisplayID()))",
             "Target: \(targetName), connected: \(targetConnected), locking to: \(locker.target?.name ?? "none")",
             "Displays:",
         ]
@@ -117,6 +118,10 @@ final class AppState: ObservableObject {
             lines.append("  - \(d.name): origin (\(Int(b.minX)), \(Int(b.minY))), size \(Int(b.width))x\(Int(b.height))\(tags.isEmpty ? "" : " [" + tags.joined(separator: ", ") + "]")")
         }
         return lines.joined(separator: "\n")
+    }
+
+    private func name(of displayID: CGDirectDisplayID?) -> String {
+        displays.first { $0.displayID == displayID }?.name ?? "none"
     }
 
     func copyDebugInfo() {

@@ -140,8 +140,37 @@ final class DockLocker {
         return DockEdge(rawValue: value ?? "bottom") ?? .bottom
     }
 
-    /// The display the Dock is on, inferred from which screen's visible frame is inset on the Dock edge.
+    /// The display the Dock is on. Prefers the Dock's own window: the space screens reserve for the
+    /// Dock (their visible frames) can go stale and keep reporting the old display after it moves.
     func currentDockDisplayID() -> CGDirectDisplayID? {
+        dockWindowDisplayID() ?? reservedSpaceDisplayID()
+    }
+
+    private var dockWindowID: CGWindowID?
+
+    /// The display containing the Dock's window, or nil if it can't be found.
+    func dockWindowDisplayID() -> CGDirectDisplayID? {
+        let dockLevel = Int(CGWindowLevelForKey(.dockWindow))
+        func isDock(_ w: [String: Any]) -> Bool {
+            w[kCGWindowOwnerName as String] as? String == "Dock" && w[kCGWindowLayer as String] as? Int == dockLevel
+        }
+        // Look up the known window directly (cheap); rescan all windows only if it's gone, e.g. the Dock restarted.
+        var info = dockWindowID.flatMap { id in
+            (CGWindowListCreateDescriptionFromArray([UnsafeRawPointer(bitPattern: UInt(id))] as CFArray) as? [[String: Any]])?
+                .first { isDock($0) && $0[kCGWindowIsOnscreen as String] as? Bool == true }
+        }
+        if info == nil {
+            info = (CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]])?.first(where: isDock)
+            dockWindowID = info?[kCGWindowNumber as String] as? CGWindowID
+        }
+        guard let dict = info?[kCGWindowBounds as String] as? NSDictionary,
+              let rect = CGRect(dictionaryRepresentation: dict) else { return nil }
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        return displays.first { $0.bounds.contains(center) }?.displayID
+    }
+
+    /// The display whose visible frame is inset on the Dock edge.
+    func reservedSpaceDisplayID() -> CGDirectDisplayID? {
         for screen in NSScreen.screens {
             let f = screen.frame, v = screen.visibleFrame
             let hasDock: Bool
