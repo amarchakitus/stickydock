@@ -54,6 +54,14 @@ final class DockLocker {
     private var guardedBounds: [CGRect] = []
     private var allBounds: [CGRect] = []
 
+    /// Posts the cursor corrections. CGWarpMouseCursorPosition freezes hardware input for 0.25 s
+    /// (CGAssociateMouseAndMouseCursorPosition no longer cancels that on macOS 27), and posting
+    /// from a source with no suppression interval moves the cursor without the freeze.
+    private let correctionSource: CGEventSource? = {
+        let source = CGEventSource(stateID: .privateState)
+        source?.localEventsSuppressionInterval = 0
+        return source
+    }()
     private let edgeMargin: CGFloat = 2
     private let cornerZone: CGFloat = 6
     private let maxAutoNudges = 3
@@ -236,8 +244,12 @@ final class DockLocker {
         if p != loc {
             event.location = p
             event.setIntegerValueField(edge == .bottom ? .mouseEventDeltaY : .mouseEventDeltaX, value: 0)
-            CGWarpMouseCursorPosition(p)
-            CGAssociateMouseAndMouseCursorPosition(1) // cancels the post-warp input freeze
+            // Move the cursor itself back too. Not with a warp: events arriving during its input
+            // freeze still report the old position past the limit, so each one re-warped and the
+            // cursor stuck at the edge for as long as the mouse kept moving.
+            let button = CGMouseButton(rawValue: UInt32(event.getIntegerValueField(.mouseEventButtonNumber))) ?? .left
+            CGEvent(mouseEventSource: correctionSource, mouseType: type, mouseCursorPosition: p, mouseButton: button)?
+                .post(tap: .cghidEventTap)
         }
         return Unmanaged.passUnretained(event)
     }
