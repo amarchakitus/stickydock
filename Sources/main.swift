@@ -63,8 +63,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             window = w
         }
         state.sync()
+        NSApp.unhide(nil)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    // Give focus back to the app the user was in. Otherwise we stay the active app with no
+    // window (invisible when there's no Dock icon), and AppKit keeps processing every mouse move.
+    func windowWillClose(_ notification: Notification) {
+        let closing = notification.object as? NSWindow
+        DispatchQueue.main.async {
+            let otherWindows = NSApp.windows.contains { $0 !== closing && $0.isVisible && $0.level == .normal }
+            if NSApp.isActive && !otherWindows { NSApp.hide(nil) }
+        }
     }
 
     // The background poll no longer syncs the UI, so pick up changes made elsewhere
