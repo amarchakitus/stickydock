@@ -268,10 +268,17 @@ final class DockLocker {
     func moveDockNow() {
         failedNudges = 0
         refresh()
-        if let target { moveDock(to: target) }
+        guard let target, currentDockDisplayID() != target.displayID else { return }
+        moveDock(to: target)
     }
 
-    private func moveDock(to display: DisplayInfo) {
+    /// Pulls the Dock over by pushing the cursor against the display's Dock edge.
+    ///
+    /// Measured on macOS 27: the Dock ignores a cursor that just appears on the edge (it has to
+    /// arrive moving), commits to moving after ~0.2-0.27 s of pushing, and only reports the move
+    /// (via the screens' visible frames) at ~0.6 s. So push briefly, hand the cursor back, and
+    /// only if the Dock didn't come over, retry pushing until it's seen to arrive.
+    private func moveDock(to display: DisplayInfo, retry: Bool = false) {
         guard !isNudging, AXIsProcessTrusted() else { return }
         // Don't hijack the cursor mid-drag.
         if NSEvent.pressedMouseButtons != 0 {
@@ -292,27 +299,32 @@ final class DockLocker {
         case .right: edgePoint = CGPoint(x: b.maxX - 1, y: b.midY); dir = CGVector(dx: 1, dy: 0)
         }
 
-        // Approach the edge, then keep pushing against it.
-        var steps: [(CGPoint, CGVector)] = []
-        for i in stride(from: 40, through: 0, by: -4) {
-            let p = CGPoint(x: edgePoint.x - dir.dx * CGFloat(i), y: edgePoint.y - dir.dy * CGFloat(i))
-            steps.append((p, CGVector(dx: dir.dx * 4, dy: dir.dy * 4)))
+        // Two short steps onto the edge, then keep pushing against it.
+        var steps: [(CGPoint, CGVector)] = [8, 4].map { i in
+            (CGPoint(x: edgePoint.x - dir.dx * i, y: edgePoint.y - dir.dy * i), CGVector(dx: dir.dx * 4, dy: dir.dy * 4))
         }
-        for _ in 0..<40 {
-            steps.append((edgePoint, CGVector(dx: dir.dx * 6, dy: dir.dy * 6)))
-        }
+        let pushes = retry ? 75 : 17 // 20 ms apart: ~1.5 s (stopping early once the Dock arrives) or ~0.35 s
+        steps += Array(repeating: (edgePoint, CGVector(dx: dir.dx * 6, dy: dir.dy * 6)), count: pushes)
+        let arrived = { [weak self] in self?.currentDockDisplayID() == display.displayID }
 
+        // Hide the cursor while it's away. This only takes effect while we're the active app
+        // (e.g. using the settings window), which is when the user is watching.
+        CGDisplayHideCursor(CGMainDisplayID())
         CGWarpMouseCursorPosition(steps[0].0)
         CGAssociateMouseAndMouseCursorPosition(1)
-        postMoves(steps, index: 0) { [weak self] in
+        postMoves(steps, index: 0, stopEarly: retry ? arrived : nil) { [weak self] in
             guard let self else { return }
             CGWarpMouseCursorPosition(original)
             CGAssociateMouseAndMouseCursorPosition(1)
+            CGDisplayShowCursor(CGMainDisplayID())
             self.isNudging = false
             self.updateTapState()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                if self.currentDockDisplayID() == display.displayID {
+            self.waitUntil(arrived, timeout: 1.0) { success in
+                if success {
                     self.failedNudges = 0
+                } else if !retry {
+                    self.moveDock(to: display, retry: true)
+                    return
                 } else {
                     self.failedNudges += 1
                 }
@@ -321,8 +333,9 @@ final class DockLocker {
         }
     }
 
-    private func postMoves(_ steps: [(CGPoint, CGVector)], index: Int, completion: @escaping () -> Void) {
-        guard index < steps.count else { completion(); return }
+    private func postMoves(_ steps: [(CGPoint, CGVector)], index: Int, stopEarly: (() -> Bool)?,
+                           completion: @escaping () -> Void) {
+        guard index < steps.count, stopEarly?() != true else { completion(); return }
         let (point, delta) = steps[index]
         if let e = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
                            mouseCursorPosition: point, mouseButton: .left) {
@@ -331,7 +344,16 @@ final class DockLocker {
             e.post(tap: .cghidEventTap)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
-            self?.postMoves(steps, index: index + 1, completion: completion)
+            self?.postMoves(steps, index: index + 1, stopEarly: stopEarly, completion: completion)
+        }
+    }
+
+    private func waitUntil(_ condition: @escaping () -> Bool, timeout: TimeInterval,
+                           completion: @escaping (Bool) -> Void) {
+        if condition() { completion(true); return }
+        guard timeout > 0 else { completion(false); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.waitUntil(condition, timeout: timeout - 0.1, completion: completion)
         }
     }
 }
