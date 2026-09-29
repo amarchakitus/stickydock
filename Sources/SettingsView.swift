@@ -117,7 +117,7 @@ struct SettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: 460)
+        .frame(width: 480)
     }
 
     private func label(for d: DisplayInfo) -> String {
